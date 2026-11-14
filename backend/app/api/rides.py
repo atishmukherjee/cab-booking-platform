@@ -7,6 +7,7 @@ from sqlmodel import select, text
 from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.db import get_session
 from app.models.ride import Ride, Driver, User
+from app.core.celery_app import generate_ride_invoice
 
 router = APIRouter(prefix="/rides", tags=["Rides"])
 
@@ -22,6 +23,9 @@ class CreateRideRequest(BaseModel):
     pickup_lon: float
     drop_lat: float
     drop_lon: float
+
+class AcceptRideRequest(BaseModel):
+    driver_id: uuid.UUID
 
 def calculate_haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371.0
@@ -40,7 +44,7 @@ async def estimate_fare(payload: EstimateRequest):
     if distance_km < 0.1:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Pickup aur drop location lagbhag same hain."
+            detail="Pickup aur drop coordinates same hain."
         )
 
     base_fare = 50.0
@@ -96,10 +100,7 @@ async def find_nearby_drivers(
     radius_km: float = 5.0,
     session: AsyncSession = Depends(get_session)
 ):
-    """PostGIS ST_DWithin query ke through rider ke aas-paas active drivers dhoondhta hai."""
     radius_meters = radius_km * 1000.0
-
-    # ST_DWithin geography casting ke saath true geodesic meter distance use karta hai
     spatial_query = text("""
         SELECT 
             d.id AS driver_id,
@@ -144,4 +145,61 @@ async def find_nearby_drivers(
         "radius_km": radius_km,
         "total_found": len(drivers),
         "drivers": drivers
+    }
+
+@router.patch("/{ride_id}/accept")
+async def accept_ride(
+    ride_id: uuid.UUID,
+    payload: AcceptRideRequest,
+    session: AsyncSession = Depends(get_session)
+):
+    ride = await session.get(Ride, ride_id)
+    if not ride:
+        raise HTTPException(status_code=404, detail="Ride not found")
+    if ride.status != "REQUESTED":
+        raise HTTPException(status_code=400, detail=f"Cannot accept ride in {ride.status} state")
+
+    ride.driver_id = payload.driver_id
+    ride.status = "ACCEPTED"
+    session.add(ride)
+    await session.commit()
+    await session.refresh(ride)
+
+    return {"message": "Ride accepted", "ride_id": ride.id, "driver_id": ride.driver_id, "status": ride.status}
+
+@router.patch("/{ride_id}/start")
+async def start_ride(ride_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+    ride = await session.get(Ride, ride_id)
+    if not ride or ride.status != "ACCEPTED":
+        raise HTTPException(status_code=400, detail="Ride must be in ACCEPTED state to start")
+
+    ride.status = "IN_PROGRESS"
+    session.add(ride)
+    await session.commit()
+    return {"message": "Trip started", "ride_id": ride.id, "status": ride.status}
+
+@router.patch("/{ride_id}/complete")
+async def complete_ride(ride_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+    ride = await session.get(Ride, ride_id)
+    if not ride or ride.status != "IN_PROGRESS":
+        raise HTTPException(status_code=400, detail="Ride must be IN_PROGRESS to complete")
+
+    ride.status = "COMPLETED"
+    ride.fare_actual = ride.fare_estimate
+    session.add(ride)
+    await session.commit()
+    await session.refresh(ride)
+
+    # Trigger Celery background worker for async PDF invoice generation
+    generate_ride_invoice.delay(
+        str(ride.id),
+        ride.fare_actual,
+        round(ride.distance_meters / 1000.0, 2)
+    )
+
+    return {
+        "message": "Trip completed and invoice queued",
+        "ride_id": ride.id,
+        "status": ride.status,
+        "fare_charged": ride.fare_actual
     }

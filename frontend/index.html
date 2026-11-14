@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Live Cab Tracking - Raipur</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    #header { background: #111827; color: #fff; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; }
+    #status { background: #059669; padding: 4px 10px; border-radius: 6px; font-size: 14px; }
+    #map { height: calc(100vh - 52px); width: 100%; }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <div><strong>Raipur Cab Live Tracker</strong> | Room: <code>test-ride-room-101</code></div>
+    <div id="status">Connecting...</div>
+  </div>
+  <div id="map"></div>
+
+  <script>
+    const RIDE_ID = "test-ride-room-101";
+    const map = L.map("map").setView([21.2580, 81.6380], 14);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "&copy; OpenStreetMap contributors"
+    }).addTo(map);
+
+    const cabIcon = L.divIcon({
+      html: '<div style="font-size:28px;">🚕</div>',
+      className: "",
+      iconSize: [30, 30],
+      iconAnchor: [15, 15]
+    });
+
+    const marker = L.marker([21.2514, 81.6296], { icon: cabIcon }).addTo(map).bindPopup("Driver: Amit Verma");
+    const routeLine = L.polyline([[21.2514, 81.6296]], { color: "#2563eb", weight: 4 }).addTo(map);
+
+    const socket = io("http://127.0.0.1:8001", { path: "/socket.io" });
+    const statusEl = document.getElementById("status");
+
+    socket.on("connect", () => {
+      statusEl.textContent = "Connected (Live)";
+      socket.emit("join_ride_room", { ride_id: RIDE_ID });
+    });
+
+    socket.on("rider_location_feed", (data) => {
+      const pos = [data.lat, data.lon];
+      marker.setLatLng(pos);
+      routeLine.addLatLng(pos);
+      map.panTo(pos);
+      statusEl.textContent = `Live GPS: ${data.lat.toFixed(4)}, ${data.lon.toFixed(4)}`;
+    });
+
+    socket.on("disconnect", () => {
+      statusEl.textContent = "Disconnected";
+      statusEl.style.background = "#dc2626";
+    });
+  </script>
+</body>
+</html>

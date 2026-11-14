@@ -1,6 +1,6 @@
 import uuid
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlmodel import SQLModel, Field, Column
 from geoalchemy2 import Geometry
 
@@ -37,4 +37,4 @@ class Ride(SQLModel, table=True):
     fare_actual: Optional[float] = None
     distance_meters: int
     duration_secs: int
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
